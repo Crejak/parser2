@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use crate::grammar::{LL1Grammar, Rule, Symbol, Terminal, Variable};
+use crate::grammar::*;
 
 type NullSet = HashSet<Variable>;
 
@@ -151,7 +151,7 @@ fn construct_follow_set(grammar: &LL1Grammar, null_set: &NullSet, first_set: &Fi
 
 type LL1ParsingTable = HashMap<(Variable, PTerminal), Rule>;
 
-fn construct_parsing_table(grammar: &LL1Grammar) -> LL1ParsingTable {
+pub fn construct_parsing_table(grammar: &LL1Grammar) -> LL1ParsingTable {
     let mut table = LL1ParsingTable::new();
 
     let null_set = construct_null_set(&grammar);
@@ -178,7 +178,50 @@ fn construct_parsing_table(grammar: &LL1Grammar) -> LL1ParsingTable {
     table
 }
 
+pub fn parse(grammar: &LL1Grammar, parsing_table: &LL1ParsingTable, input: &str) -> Option<Vec<Rule>> {
+    let mut stack: Vec<PSymbol> = Vec::new();
 
+    stack.push(PSymbol::end());
+    stack.push(PSymbol::from_var(grammar.start_symbol()));
+
+    let mut stream = input.chars().peekable();
+
+    let mut accepted_rules = Vec::new();
+
+    while !stack.is_empty() {
+        let next = match stream.peek() {
+            Some(c) => PTerminal::Character(c.clone()),
+            None => PTerminal::End
+        };
+
+        match stack.last().unwrap() {
+            PSymbol::Variable(var) => {
+                if let Some(rule) = parsing_table.get(&(var.clone(), next)) {
+                    stack.pop().unwrap();
+
+                    if !rule.right_is_eps() {
+                        rule.right().iter()
+                            .rev()
+                            .for_each(|s| stack.push(PSymbol::from(s).unwrap()));
+                    }
+
+                    accepted_rules.push(rule.clone());
+                } else {
+                    return None;
+                }
+            },
+            PSymbol::PTerminal(p_ter) => {
+                if next != *p_ter {
+                    return None;
+                }
+                stack.pop().unwrap();
+                stream.next();
+            }
+        }
+    }
+
+    Some(accepted_rules)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PTerminal {
@@ -187,15 +230,37 @@ pub enum PTerminal {
 }
 
 impl PTerminal {
-    pub fn new(c: char) -> Self {
-        PTerminal::Character(c)
-    }
-
     pub fn from_ter(terminal: &Terminal) -> Option<Self> {
         match terminal {
             Terminal::Character(c) => Some(PTerminal::Character(c.clone())),
             Terminal::Epsilon => None
         }
+    }
+}
+
+#[derive(Debug)]
+pub enum PSymbol {
+    Variable(Variable),
+    PTerminal(PTerminal)
+}
+
+impl PSymbol {
+    pub fn end() -> PSymbol {
+        PSymbol::PTerminal(PTerminal::End)
+    }
+
+    pub fn from(symbol: &Symbol) -> Option<PSymbol> {
+        match symbol {
+            Symbol::Variable(var) => Some(PSymbol::Variable(var.clone())),
+            Symbol::Terminal(ter) => match ter {
+                Terminal::Character(c) => Some(PSymbol::PTerminal(PTerminal::Character(c.clone()))),
+                Terminal::Epsilon => None
+            }
+        }
+    }
+
+    pub fn from_var(var: &Variable) -> PSymbol {
+        PSymbol::Variable(var.clone())
     }
 }
 

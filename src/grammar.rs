@@ -85,13 +85,6 @@ impl Symbol {
         }
     }
 
-    pub fn is_ter(&self) -> bool {
-        match self {
-            Symbol::Terminal(_) => true,
-            _ => false
-        }
-    }
-
     pub fn is_eps(&self) -> bool {
         match self {
             Symbol::Terminal(Terminal::Epsilon) => true,
