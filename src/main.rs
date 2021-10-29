@@ -77,6 +77,28 @@ fn construct_first_set(grammar: &LL1Grammar, null_set: &NullSet) -> FirstSet {
     first_set
 }
 
+fn compute_first_set<'a>(expr: impl Iterator<Item=&'a Symbol>, null_set: &NullSet, first_set: &FirstSet) -> HashSet<Terminal> {
+    let mut first_set_of_right = HashSet::new();
+
+    for symbol_after in expr {
+        let should_continue = match symbol_after {
+            Symbol::Variable(symbol_var) => {
+                first_set_of_right = first_set_of_right.union(first_set.get(symbol_var).unwrap()).map(Terminal::clone).collect();
+                null_set.contains(symbol_var)
+            }
+            Symbol::Terminal(symbol_ter) => {
+                first_set_of_right.insert(symbol_ter.clone());
+                symbol_ter.is_eps()
+            }
+        };
+        if !should_continue {
+            break;
+        }
+    }
+
+    first_set_of_right
+}
+
 type FollowSet = HashMap<Variable, HashSet<PTerminal>>;
 
 fn construct_follow_set(grammar: &LL1Grammar, null_set: &NullSet, first_set: &FirstSet) -> FollowSet {
@@ -103,22 +125,7 @@ fn construct_follow_set(grammar: &LL1Grammar, null_set: &NullSet, first_set: &Fi
                 if index + 1 >= rule.right().len() {
                     add_to_follow = follow_set.get(rule.left()).unwrap().clone();
                 } else {
-                    let mut first_set_of_right = HashSet::new();
-                    for symbol_after in rule.right().iter().skip(index + 1) {
-                        let should_continue = match symbol_after {
-                            Symbol::Variable(symbol_var) => {
-                                first_set_of_right = first_set_of_right.union(first_set.get(symbol_var).unwrap()).map(Terminal::clone).collect();
-                                null_set.contains(symbol_var)
-                            }
-                            Symbol::Terminal(symbol_ter) => {
-                                first_set_of_right.insert(symbol_ter.clone());
-                                symbol_ter.is_eps()
-                            }
-                        };
-                        if !should_continue {
-                            break;
-                        }
-                    }
+                    let first_set_of_right = compute_first_set(rule.right().iter().skip(index + 1), &null_set, &first_set);
 
                     add_to_follow = first_set_of_right.iter()
                         .filter(|t| !t.is_eps())
@@ -143,6 +150,35 @@ fn construct_follow_set(grammar: &LL1Grammar, null_set: &NullSet, first_set: &Fi
     }
 
     follow_set
+}
+
+type LL1ParsingTable = HashMap<(Variable, PTerminal), Rule>;
+
+fn construct_parsing_table(grammar: &LL1Grammar) -> LL1ParsingTable {
+    let mut table = LL1ParsingTable::new();
+
+    let null_set = construct_null_set(&grammar);
+    let first_set = construct_first_set(&grammar, &null_set);
+    let follow_set = construct_follow_set(&grammar, &null_set, &first_set);
+
+    for rule in grammar.rules() {
+        let first_set_of_right = compute_first_set(rule.right().iter(), &null_set, &first_set);
+
+        let mut add_rule_to: HashSet<PTerminal> = first_set_of_right.iter()
+            .filter(|t| !t.is_eps())
+            .map(|t| PTerminal::from_ter(t).unwrap())
+            .collect();
+
+        if first_set_of_right.contains(&Terminal::Epsilon) {
+            add_rule_to = add_rule_to.union(follow_set.get(rule.left()).unwrap()).map(PTerminal::clone).collect();
+        }
+
+        for p_ter in add_rule_to {
+            table.insert((rule.left().clone(), p_ter), rule.clone());
+        }
+    }
+
+    table
 }
 
 #[derive(Debug)]
@@ -265,7 +301,7 @@ impl Symbol {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rule {
     left: Variable,
     right: Expression
@@ -291,7 +327,7 @@ type Expression = Vec<Symbol>;
 #[cfg(test)]
 mod test {
     use std::collections::{HashMap, HashSet};
-    use crate::{construct_first_set, construct_null_set, LL1Grammar, Rule, Symbol, Variable, Terminal, construct_follow_set, PTerminal};
+    use crate::{construct_first_set, construct_null_set, LL1Grammar, Rule, Symbol, Variable, Terminal, construct_follow_set, PTerminal, construct_parsing_table, LL1ParsingTable, FollowSet, FirstSet, NullSet};
 
     fn example_grammar() -> LL1Grammar {
         LL1Grammar {
@@ -358,7 +394,7 @@ mod test {
 
         let null_set = construct_null_set(&grammar);
 
-        assert_eq!(null_set, HashSet::from([Variable::new('F'), Variable::new('U')]));
+        assert_eq!(null_set, NullSet::from([Variable::new('F'), Variable::new('U')]));
     }
 
     #[test]
@@ -369,7 +405,7 @@ mod test {
 
         let first_set = construct_first_set(&grammar, &null_set);
 
-        assert_eq!(first_set, HashMap::from([
+        assert_eq!(first_set, FirstSet::from([
             (Variable::new('E'), HashSet::from([Terminal::new('('), Terminal::new('1'), Terminal::new('x')])),
             (Variable::new('T'), HashSet::from([Terminal::new('('), Terminal::new('1'), Terminal::new('x')])),
             (Variable::new('Z'), HashSet::from([Terminal::new('('), Terminal::new('1'), Terminal::new('x')])),
@@ -387,12 +423,41 @@ mod test {
 
         let follow_set = construct_follow_set(&grammar, &null_set, &first_set);
 
-        assert_eq!(follow_set, HashMap::from([
+        assert_eq!(follow_set, FollowSet::from([
             (Variable::new('E'), HashSet::from([PTerminal::End, PTerminal::new(')')])),
             (Variable::new('F'), HashSet::from([PTerminal::End, PTerminal::new(')')])),
             (Variable::new('T'), HashSet::from([PTerminal::End, PTerminal::new(')'), PTerminal::new('+'), PTerminal::new('-')])),
             (Variable::new('U'), HashSet::from([PTerminal::End, PTerminal::new(')'), PTerminal::new('+'), PTerminal::new('-')])),
             (Variable::new('Z'), HashSet::from([PTerminal::End, PTerminal::new(')'), PTerminal::new('+'), PTerminal::new('-'), PTerminal::new('*'), PTerminal::new('/')])),
         ]))
+    }
+
+    #[test]
+    fn create_parsing_table() {
+        let grammar = example_grammar();
+
+        let parsing_table = construct_parsing_table(&grammar);
+
+        assert_eq!(parsing_table, LL1ParsingTable::from([
+            ((Variable::new('E'), PTerminal::new('(')), Rule { left: Variable::new('E'), right: vec![Symbol::var('T'), Symbol::var('F')] }),
+            ((Variable::new('E'), PTerminal::new('1')), Rule { left: Variable::new('E'), right: vec![Symbol::var('T'), Symbol::var('F')] }),
+            ((Variable::new('E'), PTerminal::new('x')), Rule { left: Variable::new('E'), right: vec![Symbol::var('T'), Symbol::var('F')] }),
+            ((Variable::new('F'), PTerminal::new('+')), Rule { left: Variable::new('F'), right: vec![Symbol::ter('+'), Symbol::var('T'), Symbol::var('F')] }),
+            ((Variable::new('F'), PTerminal::new('-')), Rule { left: Variable::new('F'), right: vec![Symbol::ter('-'), Symbol::var('T'), Symbol::var('F')] }),
+            ((Variable::new('F'), PTerminal::new(')')), Rule { left: Variable::new('F'), right: vec![Symbol::eps()] }),
+            ((Variable::new('F'), PTerminal::End), Rule { left: Variable::new('F'), right: vec![Symbol::eps()] }),
+            ((Variable::new('T'), PTerminal::new('(')), Rule { left: Variable::new('T'), right: vec![Symbol::var('Z'), Symbol::var('U')] }),
+            ((Variable::new('T'), PTerminal::new('1')), Rule { left: Variable::new('T'), right: vec![Symbol::var('Z'), Symbol::var('U')] }),
+            ((Variable::new('T'), PTerminal::new('x')), Rule { left: Variable::new('T'), right: vec![Symbol::var('Z'), Symbol::var('U')] }),
+            ((Variable::new('U'), PTerminal::new('+')), Rule { left: Variable::new('U'), right: vec![Symbol::eps()] }),
+            ((Variable::new('U'), PTerminal::new('-')), Rule { left: Variable::new('U'), right: vec![Symbol::eps()] }),
+            ((Variable::new('U'), PTerminal::new('/')), Rule { left: Variable::new('U'), right: vec![Symbol::ter('/'), Symbol::var('Z'), Symbol::var('U')] }),
+            ((Variable::new('U'), PTerminal::new('*')), Rule { left: Variable::new('U'), right: vec![Symbol::ter('*'), Symbol::var('Z'), Symbol::var('U')] }),
+            ((Variable::new('U'), PTerminal::new(')')), Rule { left: Variable::new('U'), right: vec![Symbol::eps()] }),
+            ((Variable::new('U'), PTerminal::End), Rule { left: Variable::new('U'), right: vec![Symbol::eps()] }),
+            ((Variable::new('Z'), PTerminal::new('(')), Rule { left: Variable::new('Z'), right: vec![Symbol::ter('('), Symbol::var('E'), Symbol::ter(')')] }),
+            ((Variable::new('Z'), PTerminal::new('1')), Rule { left: Variable::new('Z'), right: vec![Symbol::ter('1')] }),
+            ((Variable::new('Z'), PTerminal::new('x')), Rule { left: Variable::new('Z'), right: vec![Symbol::ter('x')] }),
+        ]));
     }
 }
